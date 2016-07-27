@@ -1,0 +1,295 @@
+---
+title: "Stochastic sims"
+author: Ben Bolker
+date: "`r format(Sys.time(), '%H:%M %d %B %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r pkgs, message=FALSE}
+library(fitsir)
+library(bbmle) ## needed for coef() ...
+library(splines) ## for ns()
+library(plyr)  ## for raply()
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(ggplot2); theme_set(theme_bw())
+library(gridExtra)
+library(ggstance) ## for horizontal violins
+```
+
+```{r stochsimfun}
+source("stochsim_funs.R")
+```
+
+```{r ssex1}
+set.seed(101)
+s0 <- simfun(rpars=list(size=10))
+```
+
+
+Various ways of fitting ...
+```{r fitex1,cache=TRUE}
+## get starting values and trajectory based on them
+## ss0 <- startfun(auto=TRUE,data=s0)
+## use the generic (bad!) starting values
+ss0 <- startfun()
+ss2 <- SIR.detsim(s0$tvec,unlist(trans.pars(ss0)))
+
+## fit and corresponding trajectory
+t1 <- system.time(f1 <- fitsir(s0,start=ss0))
+ss3 <- SIR.detsim(s0$tvec,trans.pars(coef(f1)))
+
+## GAM fit: match number of degrees of freedom
+## glm() lists df as df+2 
+
+##   counting for intercept and residual var(?)
+m1 <- glm(count~ns(tvec,df=3),
+          family=gaussian(link="log"),data=s0)
+```
+
+`fitsir` works OK in this case even though we use the
+generic starting parameters (not auto-fit, which is currently
+broken):
+```{r fitex1_plot,echo=FALSE}
+par(las=1,bty="l")
+plot(count~tvec,data=s0)
+lines(s0$tvec,ss2)  ## incidence/prevalence mismatch?
+lines(s0$tvec,ss3,col=2)  ## decent fit anyway
+lines(s0$tvec,predict(m1,type="response"),col=4)
+legend("topright",
+       c("start","fitsir","spline"),
+       col=c(1,2,4),lty=1)
+```
+
+
+## Preliminary ensemble results
+
+```{r fitsim1,cache=TRUE}
+## takes about 1 minute per sim ...
+system.time(print(fitfun(s0)))
+```
+(autostart was used with these cached results ...)
+
+```{r loadsims}
+simfn <- "stochsim.rda"
+if (file.exists(simfn)) {
+   load(simfn)
+} else {
+set.seed(101)
+res1 <- raply(20,fitfun(simfun(rpars=list(size=10))),
+              .progress="text")
+}
+```
+
+How well does this work?
+
+```{r simhist,echo=FALSE}
+par(las=1,bty="l")
+with(res1,hist(nll.SIR-nll.gam,col="gray",breaks=20,
+               main=""))
+```
+
+## Notes/preliminary conclusions
+
+- these are fits to a reasonably well-behaved (although fairly noisy simulation example)
+- with the current "autofit" functionality, `fitsir` mostly works OK, doesn't need Latin hypercube for this example
+- in 20 sims, GAM/spline fit does slightly better most (90%) of the time, but not a big difference (<2 log-likelihood units)
+
+```{r fit_try,cache=TRUE}
+fitfun(s0)[c("nll.SIR","nll.gam")]
+fitfun2(s0,plot.it=TRUE,log="y")
+```
+
+Note that in this case `fitsir` has *lower* mean-squared-error, despite having a higher negative log-likelihood. This makes some sense because `fitsir` appears better on the log scale ...
+
+```{r sizecal,cache=TRUE}
+sizevec <- 10^seq(0,2,length.out=20)
+repvals <- 1:10
+sres <- data.frame(expand.grid(size=sizevec,rep=repvals),
+                   cbind(fitsir=NA,spline=NA))
+set.seed(101)
+for (i in 1:nrow(sres)) {
+    sres[i,3:4] <- 
+        fitfun2(simfun(rpars=list(size=sres[i,"size"])))
+}
+sres2 <- gather(sres,method,mse,-size,-rep)
+ggplot(sres2,aes(size,mse,colour=method))+
+    scale_x_log10()+
+    scale_y_log10()+
+    geom_point()+geom_smooth()+scale_colour_brewer(palette="Set1")
+```
+
+We may need pretty small `size` values to get match the observed range of mean-squared error values ...
+
+A first crack at comparing `fitsir` and spline (three ways to do this -- (1) true start values; (2) generic start values; (3) LHS of starting values, pick best)
+
+```{r loadsims2}
+simfn2 <- "stochsim2.rda"
+fitfun.optim <- function(data) {
+    t1 <- system.time(f1 <- fitsir.optim(data,start=startfun(auto=TRUE,data=data)))
+    m1 <- glm(count~ns(tvec,df=3),family=gaussian(link="log"),data=data)
+    res <- c(t=unname(t1["elapsed"]),coef(f1),
+      nll.SIR=c(-logLik(f1)),nll.gam=c(-logLik(m1)))
+    return(res)
+}
+
+if (file.exists(simfn2)) {
+   load(simfn2)
+} else {
+    set.seed(101)
+    res1 <- raply(20,fitfun(simfun(rpars=list(size=10))))
+    save("res1",file=simfn2)
+}
+```
+
+## Ranges
+
+from Dora:
+
+```{r dora_ranges}
+Nquant <- setNames(
+    c(9.908985e+00,4.492488e+02,2.096015e+03,2.878854e+04,2.865343e+31),
+    seq(0,100,by=25))
+I0quant <-  setNames(
+    c(6.573213e-193,6.255714e-04,9.216386e-03,4.933392e-02,9.990980e-01),
+    seq(0,100,by=25))
+
+m0 <- matrix(c(1.16,1.66,3.85,3.98,7.68,15.08,0.16,0.36,0.57,0.07,0.13,0.25,
+         1.12,1.34,2.11,3.61,6.85,11.07,0.15,0.28,0.55,0.09,0.14,0.28,
+         1.26,2.27,5.13,3.90,7.19,11.49,0.26,0.47,1.08,0.09,0.14,0.26,
+         1.24,1.88,8.60,4.71,12.97,42.06,0.16,0.31,0.73,0.02,0.08,0.21),
+         ncol=4)
+dimnames(m0) <- list(paste(rep(c("R0","1/gamma","beta","gamma"),each=3),
+                     rep(paste0("Q",1:3),4),sep="_"),
+                     c("GB","BR","FI","ID"))
+m1 <- m0 %>% as.data.frame %>% rownames_to_column("var") %>%
+    separate(var,c("var","quantile"),sep="_") %>%
+    gather(country,value,-c(var,quantile))
+## mutate(qq=as.numeric(gsub("Q","",quantile))*0.25)
+ggplot(m1,aes(country,value))+geom_point()+
+    facet_wrap(~var,scale="free")
+```
+
+- get parameter ranges from DR: $\beta$, $\gamma$, $N$, $I(0)$, and number of data points (for simplicity we will take the same overall time range, and use number of data points for `dt`)
+- calibrate neg binomial size parameter to observed mean squared error
+- larger sample
+- parameters more typical of DR/music-download data: esp. more samples (will presumably make differences *more* significant/favour GAMs more?)
+- try factorial experiment:
+    - multiple sims
+    - range of sample sizes
+    - range of true parameter values (Latin hypercube??)
+
+## comparing smooth.spline and `lm(y~ns())`
+
+How do we fit a reasonable spline model of equivalent complexity to `fitsir` (with 4 total parameters)?
+
+`?ns` says
+
+> One can supply ‘df’ rather than knots; ‘ns()’ then chooses ‘df - 1 - intercept’ knots ...
+
+however, the `df` refers to the number of *spline* degrees of freedom; if we set `df=3` we get 4 parameters (intercept+3). `smooth.spline` with $k$ knots gives $k+2$ coefficients (but it's almost impossible to make it work with $k=2$ knots \ldots)
+
+```{r check_spline_coefs}
+set.seed(101)
+dx <- data.frame(x=rnorm(100),y=rnorm(100))
+length(coef(lm(y~ns(x,df=3),data=dx)))
+ss <- with(dx,smooth.spline(x,y,nknots=4))
+length(ss$fit$coef)
+```
+
+- it seems that a fairer matching of model complexity would use `df=4`/`nknots=2`: `?splines::ns` says "". However, `nknots=2` seems to *break* `smooth.spline()`, which does some fancy internal calculations to compute the smoothing parameter (see `?smooth.spline` ...)
+- compute the negative log-likelihood for spline fits: these have to be adjusted (by adding $\sum 1/y$??) to allow for change of scale if we fit the splines on the log scale and compute the likelihood of the SIR model on the linear scale (which raises the question why we're doing that in the first place ...)
+
+```{r fitcomp,cache=TRUE,echo=FALSE}
+bombay2 <- setNames(bombay,c("tvec","count"))
+f1 <- fitsir(bombay2,start=startfun(auto=TRUE,data=bombay2))
+fpred1 <- SIR.detsim(bombay2$tvec,unlist(trans.pars(coef(f1))))
+res <- ldply(setNames(6:3,paste0("ns",6:3)),
+      function(x) {
+    m <- lm(log(count)~ns(tvec,df=x),data=bombay2)
+    data.frame(tvec=bombay2$tvec,var="log",pred=exp(predict(m)))
+    },.id="method")
+res2 <- ldply(setNames(6:3,paste0("ns",6:3)),
+      function(x) {
+    m <- glm(count~ns(tvec,df=x),
+             family=gaussian(link="log"),data=bombay2)
+    data.frame(tvec=bombay2$tvec,var="lin",pred=exp(predict(m)))
+    },.id="method")
+## ss$fit$nk ## number of knots
+res3 <- rbind(data.frame(method="fitsir",
+                         var="lin",tvec=bombay2$tvec,pred=fpred1),
+             res,res2)
+ggspline <- ggplot(res3,aes(tvec,pred))+
+    geom_line(aes(colour=method,lty=var))+
+    geom_point(data=bombay2,aes(y=count))
+grid.arrange(ggspline,ggspline+scale_y_log10(),nrow=1)
+```
+
+
+
+## stoch sim batch results
+
+
+```{r loadnewres,echo=FALSE}
+load("stochsim_4.rda")  ## main results
+res2 <- res %>% data.frame(as.is=TRUE) %>% select(contains("mse")) %>% na.omit()
+nsims <- length(na.omit(res[,"fitsir.1_time"]))
+```
+
+Order of columns in sim output is:
+
+- 1,2: fitsir with "auto" and "true" start
+- 3: smooth spline with 6 coefficients (minimum practical)
+- 4,5: `ns()` with 4 coefficients, lin/log scale criterion
+- 6,7: `ns()` with 6 coeff, ditto
+
+It turns out the fits with the linear-scale criterion have *terrible*
+MSEs, leaving these out for now.
+
+
+```{r relval,echo=FALSE}
+labs <- c("fitsir_auto","fitsir_true",
+          "smooth.spline","ns_4_lin","ns_4_log",
+          "ns_6_lin","ns_6_log")
+res3 <- setNames(res2,labs) %>% select(-contains("_lin"))
+res3_diff <- as.data.frame(t(apply(res3,1,function(x) x/min(x))))
+median_hilow_h <- function (x, ...)  {
+    result <- do.call(Hmisc::smedian.hilow, list(x = quote(x), ...))
+    plyr::rename(data.frame(t(result)), c(Median = "x", Mean = "x", 
+        Lower = "xmin", Upper = "xmax"), warn_missing = FALSE)
+}
+res3g <- gather(res3,method,mse)
+gsum <- res3g %>% group_by(method) %>%
+    mutate(lmse = log10(mse)) %>%
+    summarise(median=median(lmse),min=quantile(lmse,0.025),
+              max=quantile(lmse,0.975))
+```
+
+```{r plotspline,fig.width=6,fig.height=4,echo=FALSE}
+gghist <- ggplot(gather(res3,method,mse),aes(x=log10(mse),fill=method))+
+    geom_histogram(alpha=0.4,position="identity",bins=30)
+ggdens <- ggplot(gather(res3,method,mse),aes(x=log10(mse),fill=method))+
+    geom_density(alpha=0.4,position="identity")
+ggviolin <- ggplot(res3g,aes(x=log10(mse),y=method,fill=method))+
+    geom_violinh()+
+    scale_fill_brewer(palette="Set1")+
+    theme(legend.position="none")+
+    geom_pointrangeh(data=gsum,aes(x=median,xmin=min,xmax=max))
+ggdensdiff <- ggdens %+% gather(res3_diff,method,mse)
+## grid.arrange(ggdens,ggdensdiff,nrow=1)
+print(ggviolin+ggtitle(sprintf("stoch sim comparison (n=%d)",nsims)))
+```
+
+(points/bars are median, 95% quantiles)
+
+Conclusions:
+
+- `smooth.spline` with 6 coefficients (= 4 knots), and `ns()` with 6 coefficients (`spline.df` = 5) give approximately equal MSE distributions, better than the rest (but have more parameters)
+- `ns()` with 4 coefficients (`spline.df`=3) does worse (median) than `fitsir`, but worst-case scenario is better ...
+- `fitsir` starting from true parameter values (best-case scenario?) does slightly better than the auto-start, but not huge differences
+

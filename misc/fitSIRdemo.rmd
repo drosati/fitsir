@@ -1,0 +1,166 @@
+---
+title: "Sensitivity demo"
+output: html_document
+---
+
+```{r pkgs, message = FALSE}
+library("deSolve")
+library("bbmle")
+source("../R/fitSIR_funs.R")
+```
+
+I'm going to show how to use the sensitivity functions...
+
+## Gradient function
+
+I'm going to claim that this is the correct sensitivity equation:
+
+$$
+\begin{aligned}
+\frac{\partial}{\partial t}\frac{\partial I(t,\theta)}{\partial\theta} &= \frac{\partial f_I}{\partial\theta}\\
+&= \frac{\partial f_I}{\partial S}\frac{\partial  S}{\partial\theta} + \frac{\partial f_I}{\partial I}\frac{\partial I}{\partial\theta} + \frac{\partial f_I}{\partial\theta} \\
+\end{aligned}
+$$
+
+## Example 
+
+```{r ex.sim}
+tvec <- seq(1, 60, 0.2)
+
+pars <- c(log.beta = -0.7,
+	log.gamma = -2.3,
+	log.N= 6.21,
+	logit.i = -4.6)
+
+pars2 <- c(log.beta = -0.7,
+	log.gamma = -2.3,
+	log.N= 6.22,
+	logit.i = -4.6)
+
+a = SIR.detsim(tvec, trans.pars(pars), findSens = TRUE)
+
+a2 = SIR.detsim(tvec, trans.pars(pars2), findSens = TRUE)
+
+z = (a2$I-a$I)/0.01
+
+plot(a$I, type = "l")
+lines(a2$I, col = "2")
+
+plot(z, type = "l")
+
+lines(a$nu_N_I, col = 2)
+
+lines(a2$nu_N_I, col = 3)
+
+```
+
+## Bombay example - initial values
+
+We start with these three equations:
+
+$$
+\begin{aligned}
+r &= \beta - \gamma,\\
+-\frac{Q}{I_p} &= \frac{\beta\gamma}{N},\\
+N - I_0 - \int I(t) dt = \frac{\gamma}{\beta}N,
+\end{aligned}
+$$
+
+where $I(t)$ is incidence. Substition gives us following two equations:
+
+$$
+\begin{aligned}
+N &= - \gamma^2 \frac{I_p}{Q} + I_0 + \int I(t) dt\\
+N &= - (\gamma+r) \gamma \frac{I_p}{Q}
+\end{aligned}
+$$
+
+This gives
+
+$$
+\begin{aligned}
+(\gamma+r) \gamma \frac{I_p}{Q} &= \gamma^2 \frac{I_p}{Q} - I_0 - \int I(t) dt\\
+\gamma^2 \frac{I_p}{Q} + r \gamma \frac{I_p}{Q} &= \gamma^2 \frac{I_p}{Q} - I_0 - \int I(t) dt\\
+r \gamma \frac{I_p}{Q} &=- (I_0 + \int I(t) dt)\\
+\end{aligned}
+$$
+
+```{r}
+library("fitsir")
+
+bombay2 <- setNames(bombay,c("tvec","count"))
+
+iniP.ex <- startfun(data=bombay2, auto = TRUE)
+
+findSens(bombay2, iniP.ex, plot.it = TRUE)
+
+(fitP <- coef(fitsir(bombay2, start = startfun(data = bombay2, auto = TRUE))))
+
+findSens(bombay2, fitP, plot.it = TRUE)
+
+```
+
+```{r, error = FALSE}
+(fitP2 <- fitsir.optim(bombay2, start = startfun(), plot.it=TRUE))
+
+findSens(bombay2, fitP2, plot.it = TRUE)
+
+##with auto start?
+
+(fitP3 <- fitsir.optim(bombay2, start = startfun(data=bombay2, auto = TRUE), plot.it=TRUE))
+
+findSens(bombay2, fitP3, plot.it = TRUE)
+
+```
+
+```{r }
+
+(fitP4 <- fitsir.optim(bombay2, start = fitP3, plot.it=TRUE))
+
+findSens(bombay2, fitP4, plot.it = TRUE)
+
+```
+
+## Incidence
+
+We need new equations for incidence... Let's assume that bombay2 data is incidence data. We're going to use $I(t)$ for incidence and $P(t)$ for prevalence from here.
+
+```{r}
+
+bombay2 <- setNames(bombay,c("tvec","count"))
+
+fitP.inc <- coef(fitsir(bombay2, incidence = TRUE))
+
+findSens(bombay2, fitP.inc, plot.it = TRUE, incidence = TRUE)
+
+bombay3 <- data.frame(tvec = bombay2$tvec, count = cumsum(bombay2$count))
+
+plot(bombay3)
+
+lines(cumsum(SIR.detsim(bombay2$tvec, trans.pars(fitP.inc), incidence = TRUE)), col = 2)
+```
+
+### Sensitivity
+
+```{r inc.sens}
+tvec <- seq(1, 50, 0.5)
+
+trans.pars(pars)
+
+fake.inc = data.frame(tvec, count = SIR.detsim(tvec, trans.pars(pars), incidence = TRUE))
+
+plot(fake.inc)
+
+fake.P <- coef(fitsir(fake.inc, incidence = TRUE))
+
+trans.pars(fake.P)
+
+findSens(fake.inc, fake.P, plot.it = TRUE, incidence = TRUE)
+```
+
+```{r}
+(fake.P2 <- fitsir.optim(fake.inc, start = startfun(), plot.it=TRUE, incidence = TRUE))
+
+findSens(fake.inc, fake.P2, plot.it = TRUE, incidence = TRUE)
+
+```

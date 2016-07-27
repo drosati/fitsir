@@ -12,7 +12,25 @@
 
 # emacs files
 *~
+*.bak
+#*
+.#*
+
+*.so
+*.o
+
+*.aux
+*.log
 
 #vignette builds
 cache/
 figure/
+.Rproj.user
+*_cache/
+*_files/
+
+# TeX stuff
+*.bbl
+*.blg
+*.aux
+*.out
